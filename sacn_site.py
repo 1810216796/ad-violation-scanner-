@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-广告违禁词扫描器 v3.2 - 稳定版（超时30s，重试3次，并发100，首页起始）
+广告违禁词扫描器 v3.2 - 稳定版（并发20，超时45s，重试2次）
 用法:
   python3 1.py           # 增量扫描（跳过已扫描URL）
   python3 1.py --reset   # 清空历史，重新扫描全部
@@ -279,13 +279,14 @@ def save_violation(site_name, url, items):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- 调整后的 Session 配置（并发20，超时45秒，重试2次） ---
 session = requests.Session()
-retry = Retry(total=3, read=3, connect=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(pool_connections=200, pool_maxsize=200, max_retries=retry)
+retry = Retry(total=2, read=2, connect=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
 session.mount('http://', adapter)
 session.mount('https://', adapter)
 session.headers.update({'User-Agent': 'Mozilla/5.0'})
-session.timeout = 30
+session.timeout = 45   # 延长超时
 
 def extract_visible_text(html_content):
     try:
@@ -329,7 +330,7 @@ def crawl_page(site_name, url):
         url = clean_url
 
     try:
-        resp = session.get(url, timeout=30)
+        resp = session.get(url, timeout=45)
         resp.encoding = resp.apparent_encoding or 'utf-8'
         raw_html = resp.text
     except Exception as e:
@@ -386,7 +387,8 @@ def crawl_and_scan(site_config):
     violations = {}
     lock = threading.Lock()
 
-    with ThreadPoolExecutor(max_workers=100) as executor:
+    # --- 并发数修改为 20 ---
+    with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_url = {executor.submit(crawl_page, site_name, u): u for u in to_visit}
         to_visit.clear()
 
@@ -403,7 +405,7 @@ def crawl_and_scan(site_config):
                                 to_visit.append(link)
                 with lock:
                     new_tasks = []
-                    while to_visit and len(new_tasks) < 100:
+                    while to_visit and len(new_tasks) < 20:   # 分批提交，每次最多20
                         u = to_visit.pop(0)
                         if u not in visited and u not in scanned_urls:
                             visited.add(u)
@@ -456,7 +458,7 @@ def generate_html_report(all_results, output_path='index.html'):
 </head>
 <body>
 <div class="container"><h1>⚡ 广告违禁词扫描报告</h1>
-<p style="color:#555;">生成时间：{now} | 并发100 | 超时30s | 断点续扫 | 已去除锚点 | 过滤静态资源 | 跳过ListInfo.php</p>
+<p style="color:#555;">生成时间：{now} | 并发20 | 超时45s | 断点续扫 | 已去除锚点 | 过滤静态资源 | 跳过ListInfo.php</p>
 <div class="summary">
   <div class="summary-item">📌 站点：<span>{total_sites}</span></div>
   <div class="summary-item">📄 总页数：<span>{total_pages}</span></div>
@@ -490,9 +492,9 @@ def main():
 
     total_start = time.time()
     print("=" * 60)
-    print("🔥 广告违禁词扫描器 v3.2 (稳定版 - 超时30s, 重试3次)")
+    print("🔥 广告违禁词扫描器 v3.2 (稳定版 - 超时45s, 重试2次)")
     print(f"精确词: {len(EXACT_FORBIDDEN_WORDS)} | 白名单: {len(SAFE_CONTEXT_PATTERNS)}")
-    print(f"待扫描站点: {len(WEBSITES)} 个 | 并发: 100")
+    print(f"待扫描站点: {len(WEBSITES)} 个 | 并发: 20")
     if args.reset:
         print("🔄 已指定 --reset，将清空历史记录并重新扫描全部。")
     print("=" * 60)
