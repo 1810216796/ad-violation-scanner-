@@ -1,6 +1,6 @@
 <?php
 /**
- * 广告违禁词扫描监控面板 - 表格站点切换版（状态判断修正）
+ * 广告违禁词扫描监控面板 - 实时版（今日数据直接读取文件行数）
  */
 
 $baseDir = __DIR__;
@@ -185,9 +185,7 @@ function getSiteScannedPages($scannedFile, $siteDomainMap) {
         $parsed = parse_url($line);
         if (isset($parsed['host'])) {
             $host = $parsed['host'];
-            // 遍历站点，检查 host 是否以主域名结尾
             foreach ($siteMainDomains as $site => $mainDomain) {
-                // 完全相等 或 以 .主域名 结尾（子域名）
                 if ($host === $mainDomain || substr($host, -strlen($mainDomain) - 1) === '.' . $mainDomain) {
                     $stats[$site] = ($stats[$site] ?? 0) + 1;
                     break;
@@ -201,14 +199,6 @@ function getSiteScannedPages($scannedFile, $siteDomainMap) {
 
 /**
  * 获取所有站点列表及基本统计（从 violations_results.txt）
- * 返回数组：[
- *   '站点名' => [
- *       'domain' => '主域名（去掉 www. 和 m.）',
- *       'word_types' => 不同违禁词个数,
- *       'total_issues' => 总违规次数,
- *       'issue_pages' => 违规页面数（URL去重）,
- *   ]
- * ]
  */
 function getAllSiteStats($violationsFile) {
     if (!file_exists($violationsFile)) return [];
@@ -246,7 +236,6 @@ function getAllSiteStats($violationsFile) {
         if ($url) {
             $siteData[$site]['url_set'][$url] = true;
         }
-        // 提取主域名（去掉 www. 和 m. 前缀）
         if (empty($siteData[$site]['domain']) && $url) {
             $parsed = parse_url($url);
             $host = $parsed['host'] ?? '';
@@ -271,15 +260,16 @@ function getAllSiteStats($violationsFile) {
     return $result;
 }
 
-// --- 获取基础数据 ---
+// --- 获取基础数据（实时） ---
 $now = date('Y-m-d H:i:s');
-$scannedTotal = getLineCount($scannedFile);
-$violationsTotal = getViolationCount($violationsFile);
+$todayPages = getLineCount($scannedFile);          // 实时扫描页数
+$todayViolations = getViolationCount($violationsFile); // 实时违规页数
 $running = isProcessRunning($logFile);
-$status = $running ? '扫描中' : ($scannedTotal > 0 ? '已停止' : '未开始');
+$status = $running ? '扫描中' : '已停止';
 $currentUrl = getCurrentScanningUrl($logFile);
 $logLines = getTailLog($logFile, 30);
 
+// --- 站点统计（用于表格和违禁词） ---
 $siteStats = getAllSiteStats($violationsFile);
 $siteDomainMap = [];
 foreach ($siteStats as $site => $info) {
@@ -294,7 +284,6 @@ $globalCompleted = strpos($logContent, "🎉 全部扫描完成") !== false;
 foreach ($siteStats as $site => &$info) {
     $info['scanned_pages'] = $siteScannedPages[$site] ?? 0;
     if ($info['scanned_pages'] > 0) {
-        // 如果全局已完成或日志中有该站点完成标记，则标记为已完成
         if ($globalCompleted || strpos($logContent, "✅ [$site] 完成") !== false) {
             $info['status'] = '已完成';
         } else {
@@ -372,14 +361,21 @@ if (isset($_GET['action'])) {
 // --- AJAX ---
 if (isset($_GET['ajax'])) {
     header('Content-Type: application/json');
+    // 实时重新读取数据
+    $todayPages = getLineCount($scannedFile);
+    $todayViolations = getViolationCount($violationsFile);
+    $running = isProcessRunning($logFile);
+    $status = $running ? '扫描中' : '已停止';
+    $currentUrl = getCurrentScanningUrl($logFile);
+    $logLines = getTailLog($logFile, 30);
     echo json_encode([
-        'scanned'    => $scannedTotal,
-        'violations' => $violationsTotal,
         'running'    => $running,
         'status'     => $status,
-        'time'       => $now,
+        'time'       => date('Y-m-d H:i:s'),
         'currentUrl' => $currentUrl,
-        'logs'       => $logLines
+        'logs'       => $logLines,
+        'todayPages' => $todayPages,
+        'todayViolations' => $todayViolations
     ]);
     exit;
 }
@@ -389,7 +385,7 @@ if (isset($_GET['ajax'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>扫描监控面板</title>
+    <title>实时扫描监控面板</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6fb; padding: 24px; color: #1f2937; }
@@ -400,19 +396,19 @@ if (isset($_GET['ajax'])) {
         .header-actions .update-time { background: #fff; padding: 6px 14px; border-radius: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .btn-refresh { background: #fff; border: none; padding: 8px 18px; border-radius: 20px; font-size: 14px; color: #2563eb; font-weight: 500; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.06); transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
         .btn-refresh:hover { background: #2563eb; color: #fff; box-shadow: 0 4px 12px rgba(37,99,235,0.3); transform: translateY(-1px); }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 20px; margin-bottom: 28px; }
-        .stat-card { background: #fff; border-radius: 16px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.03); transition: transform 0.2s; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #fff; border-radius: 16px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.03); transition: transform 0.2s; }
         .stat-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
-        .stat-card .label { font-size: 14px; color: #9ca3af; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
-        .stat-card .value { font-size: 34px; font-weight: 700; color: #111827; margin-top: 6px; }
+        .stat-card .label { font-size: 13px; color: #9ca3af; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
+        .stat-card .value { font-size: 28px; font-weight: 700; color: #111827; margin-top: 4px; }
         .stat-card .value.running { color: #059669; }
         .stat-card .value.stopped { color: #dc2626; }
-        .stat-card .sub { font-size: 14px; color: #6b7280; margin-top: 4px; word-break: break-all; }
-        .log-section { background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden; margin-bottom: 32px; }
-        .log-header { padding: 16px 24px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; }
+        .stat-card .sub { font-size: 13px; color: #6b7280; margin-top: 4px; word-break: break-all; }
+        .log-section { background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden; margin-bottom: 24px; }
+        .log-header { padding: 14px 24px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; }
         .log-header h3 { font-size: 16px; font-weight: 600; color: #1f2937; }
         .log-header .badge { background: #e5e7eb; color: #4b5563; font-size: 12px; padding: 2px 12px; border-radius: 12px; }
-        .log-body { padding: 16px 24px; background: #0d1117; color: #e6edf3; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.6; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+        .log-body { padding: 16px 24px; background: #0d1117; color: #e6edf3; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.6; max-height: 350px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
         .site-table-wrapper { background: #fff; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden; margin-bottom: 24px; border: 1px solid #e5e7eb; }
         .site-table-wrapper table { width: 100%; border-collapse: collapse; font-size: 14px; }
         .site-table-wrapper th { background: #f8fafc; color: #4b5563; font-weight: 600; padding: 12px 16px; text-align: left; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
@@ -470,24 +466,25 @@ if (isset($_GET['ajax'])) {
 <body>
 <div class="container">
     <div class="header">
-        <h1>📊 扫描监控面板</h1>
+        <h1>📊 实时扫描监控面板</h1>
         <div class="header-actions">
             <span class="update-time">🕒 <span id="updateTime"><?= $now ?></span></span>
             <button class="btn-refresh" onclick="location.reload();">⟳ 刷新</button>
         </div>
     </div>
 
+    <!-- 统计卡片：实时显示今日扫描和今日违规 -->
     <div class="stats-grid" id="stats">
         <div class="stat-card">
-            <div class="label">📄 已扫描</div>
-            <div class="value" id="scannedCount"><?= $scannedTotal ?></div>
+            <div class="label">📄 今日扫描</div>
+            <div class="value" id="todayScanned"><?= $todayPages ?></div>
         </div>
         <div class="stat-card">
-            <div class="label">⚠️ 违规</div>
-            <div class="value" id="violationCount"><?= $violationsTotal ?></div>
+            <div class="label">⚠️ 今日违规</div>
+            <div class="value" id="todayViolations"><?= $todayViolations ?></div>
         </div>
         <div class="stat-card">
-            <div class="label">🔄 状态</div>
+            <div class="label">🔄 运行状态</div>
             <div class="value <?= $running ? 'running' : 'stopped' ?>" id="runStatus"><?= $running ? '● 运行中' : '● 已停止' ?></div>
             <div class="sub" id="statusDesc"><?= $status ?></div>
         </div>
@@ -497,6 +494,7 @@ if (isset($_GET['ajax'])) {
         </div>
     </div>
 
+    <!-- 日志 -->
     <div class="log-section">
         <div class="log-header">
             <h3>📋 最新日志（30行）</h3>
@@ -556,7 +554,7 @@ if (isset($_GET['ajax'])) {
         </div>
     </div>
 
-    <div class="footer">扫描脚本 1.py · 并发100 · 断点续扫 · 点击站点查看违禁词 · 点击违禁词查看详情</div>
+    <div class="footer">扫描脚本 1.py · 并发20 · 超时45s · 实时统计 · 点击站点查看违禁词 · 点击违禁词查看详情</div>
 </div>
 
 <script>
@@ -735,8 +733,8 @@ if (isset($_GET['ajax'])) {
         fetch('?ajax=1')
             .then(res => res.json())
             .then(data => {
-                document.getElementById('scannedCount').textContent = data.scanned;
-                document.getElementById('violationCount').textContent = data.violations;
+                document.getElementById('todayScanned').textContent = data.todayPages;
+                document.getElementById('todayViolations').textContent = data.todayViolations;
                 document.getElementById('updateTime').textContent = data.time;
                 document.getElementById('currentUrl').textContent = data.currentUrl;
                 const statusEl = document.getElementById('runStatus');
@@ -757,7 +755,7 @@ if (isset($_GET['ajax'])) {
 
     window.onload = function() {
         loadSites();
-        setInterval(fetchStatus, 2000);
+        setInterval(fetchStatus, 1000);
         document.getElementById('logContainer').scrollTop = document.getElementById('logContainer').scrollHeight;
     };
 </script>
