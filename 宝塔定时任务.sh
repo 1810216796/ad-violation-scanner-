@@ -16,7 +16,6 @@ get_page_count() { [ -f "$COUNT_FILE" ] && wc -l < "$COUNT_FILE" | tr -d ' ' || 
 is_process_running() { pgrep -f "$SCAN_CMD" > /dev/null 2>&1; }
 kill_all_scanners() { pkill -f "$SCAN_CMD" 2>/dev/null; sleep 2; }
 
-# 启动扫描，接受额外参数（如 --reset）
 start_scanner() {
     cd "$WORK_DIR" || exit 1
     local extra_args="$1"
@@ -34,14 +33,14 @@ echo $$ > "$LOCK_FILE"
 
 log "开始监控扫描..."
 
-# 检查是否需要全量扫描（距离上次全量是否超过24小时）
+# 检查是否需要全量扫描（距离上次全量是否超过7天 = 604800秒）
 CURRENT_TIME=$(date +%s)
 LAST_FULL_TIME=0
 [ -f "$FULL_SCAN_TIME_FILE" ] && LAST_FULL_TIME=$(cat "$FULL_SCAN_TIME_FILE")
 TIME_DIFF=$((CURRENT_TIME - LAST_FULL_TIME))
 
-if [ $TIME_DIFF -ge 86400 ]; then
-    log "距离上次全量扫描已超过24小时（${TIME_DIFF}秒），执行全量扫描..."
+if [ $TIME_DIFF -ge 604800 ]; then
+    log "距离上次全量扫描已超过7天（${TIME_DIFF}秒），执行全量扫描..."
     echo "$CURRENT_TIME" > "$FULL_SCAN_TIME_FILE"
     kill_all_scanners
     start_scanner "--reset"
