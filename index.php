@@ -1,12 +1,14 @@
+
 <?php
 /**
- * 广告违禁词扫描监控面板 - 实时版（今日数据直接读取文件行数）
+ * 广告违禁词扫描监控面板 - 最近7天版（扫描模式显示）
  */
 
 $baseDir = __DIR__;
 $logFile = $baseDir . '/scan.log';
 $scannedFile = $baseDir . '/scanned_urls.txt';
 $violationsFile = $baseDir . '/violations_results.txt';
+$fullScanTimeFile = '/tmp/full_scan_time.txt'; // 由监控脚本写入
 
 // --- 工具函数 ---
 function getLineCount($file) {
@@ -51,6 +53,26 @@ function getCurrentScanningUrl($logFile) {
         }
     }
     return '暂无';
+}
+
+/**
+ * 获取扫描模式（增量/全量）及最近全量时间
+ */
+function getScanMode($fullScanTimeFile) {
+    if (!file_exists($fullScanTimeFile)) {
+        return ['mode' => '首次运行（全量）', 'time' => '未知'];
+    }
+    $timestamp = (int)file_get_contents($fullScanTimeFile);
+    $timeStr = date('Y-m-d H:i:s', $timestamp);
+    $now = time();
+    $diff = $now - $timestamp;
+    // 7天 = 604800秒
+    if ($diff < 604800) {
+        $mode = '增量扫描（距上次全量 ' . floor($diff/86400) . ' 天 ' . floor(($diff%86400)/3600) . ' 小时）';
+    } else {
+        $mode = '即将触发全量扫描（距上次全量已超过7天）';
+    }
+    return ['mode' => $mode, 'time' => $timeStr];
 }
 
 /**
@@ -260,14 +282,17 @@ function getAllSiteStats($violationsFile) {
     return $result;
 }
 
-// --- 获取基础数据（实时） ---
+// --- 获取基础数据 ---
 $now = date('Y-m-d H:i:s');
-$todayPages = getLineCount($scannedFile);          // 实时扫描页数
-$todayViolations = getViolationCount($violationsFile); // 实时违规页数
+$scannedPages = getLineCount($scannedFile);          // 最近7天扫描页数
+$violationsCount = getViolationCount($violationsFile); // 最近7天可能违规页数
 $running = isProcessRunning($logFile);
 $status = $running ? '扫描中' : '已停止';
 $currentUrl = getCurrentScanningUrl($logFile);
 $logLines = getTailLog($logFile, 30);
+
+// 获取扫描模式
+$scanModeInfo = getScanMode($fullScanTimeFile);
 
 // --- 站点统计（用于表格和违禁词） ---
 $siteStats = getAllSiteStats($violationsFile);
@@ -362,8 +387,8 @@ if (isset($_GET['action'])) {
 if (isset($_GET['ajax'])) {
     header('Content-Type: application/json');
     // 实时重新读取数据
-    $todayPages = getLineCount($scannedFile);
-    $todayViolations = getViolationCount($violationsFile);
+    $scannedPages = getLineCount($scannedFile);
+    $violationsCount = getViolationCount($violationsFile);
     $running = isProcessRunning($logFile);
     $status = $running ? '扫描中' : '已停止';
     $currentUrl = getCurrentScanningUrl($logFile);
@@ -374,8 +399,8 @@ if (isset($_GET['ajax'])) {
         'time'       => date('Y-m-d H:i:s'),
         'currentUrl' => $currentUrl,
         'logs'       => $logLines,
-        'todayPages' => $todayPages,
-        'todayViolations' => $todayViolations
+        'scannedPages' => $scannedPages,
+        'violationsCount' => $violationsCount
     ]);
     exit;
 }
@@ -385,17 +410,19 @@ if (isset($_GET['ajax'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>实时扫描监控面板</title>
+    <title>扫描监控面板（最近7天）</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6fb; padding: 24px; color: #1f2937; }
         .container { max-width: 1440px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; flex-wrap: wrap; gap: 16px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 16px; }
         .header h1 { font-size: 26px; font-weight: 600; background: linear-gradient(135deg, #2563eb, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: -0.5px; }
         .header-actions { display: flex; align-items: center; gap: 16px; font-size: 14px; color: #6b7280; }
         .header-actions .update-time { background: #fff; padding: 6px 14px; border-radius: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .btn-refresh { background: #fff; border: none; padding: 8px 18px; border-radius: 20px; font-size: 14px; color: #2563eb; font-weight: 500; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.06); transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
         .btn-refresh:hover { background: #2563eb; color: #fff; box-shadow: 0 4px 12px rgba(37,99,235,0.3); transform: translateY(-1px); }
+        .scan-mode-info { background: #eef2ff; padding: 10px 20px; border-radius: 12px; margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 20px; font-size: 14px; color: #1e3a8a; border: 1px solid #c7d2fe; }
+        .scan-mode-info strong { font-weight: 600; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 16px; margin-bottom: 24px; }
         .stat-card { background: #fff; border-radius: 16px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.03); transition: transform 0.2s; }
         .stat-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
@@ -432,10 +459,10 @@ if (isset($_GET['ajax'])) {
         .search-box button { padding: 10px 20px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
         .search-box button:hover { background: #1d4ed8; }
         .word-list { display: flex; flex-wrap: wrap; gap: 12px; max-height: 500px; overflow-y: auto; padding: 4px 0; }
-        .word-tag { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: #f1f5f9; border-radius: 20px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; font-size: 14px; color: #1f2937; }
-        .word-tag:hover { background: #e0e7ff; border-color: #2563eb; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(37,99,235,0.15); }
+        .word-tag { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: #fef3c7; border-radius: 20px; cursor: pointer; transition: all 0.2s; border: 1px solid #fcd34d; font-size: 14px; color: #92400e; }
+        .word-tag:hover { background: #fde68a; border-color: #f59e0b; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(245,158,11,0.2); }
         .word-tag .word-text { font-weight: 500; }
-        .word-tag .count-badge { background: #2563eb; color: #fff; border-radius: 12px; padding: 0 10px; font-size: 12px; line-height: 20px; font-weight: 500; }
+        .word-tag .count-badge { background: #dc2626; color: #fff; border-radius: 12px; padding: 0 10px; font-size: 12px; line-height: 20px; font-weight: 500; }
         .no-data { text-align: center; padding: 30px 0; color: #9ca3af; font-size: 16px; width: 100%; }
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 999; justify-content: center; align-items: center; padding: 20px; backdrop-filter: blur(2px); }
         .modal-overlay.active { display: flex; }
@@ -455,7 +482,7 @@ if (isset($_GET['ajax'])) {
         .modal-body .context-entry .context-url { font-size: 13px; margin-bottom: 4px; word-break: break-all; }
         .modal-body .context-entry .context-url a { color: #2563eb; text-decoration: none; }
         .modal-body .context-entry .context-url a:hover { text-decoration: underline; }
-        .modal-body .context-entry .word-badge { display: inline-block; background: #ef4444; color: #fff; border-radius: 4px; padding: 1px 10px; font-size: 13px; font-weight: 600; margin-right: 6px; }
+        .modal-body .context-entry .word-badge { display: inline-block; background: #dc2626; color: #fff; border-radius: 4px; padding: 1px 10px; font-size: 13px; font-weight: 600; margin-right: 6px; }
         .modal-body .context-entry .word-type { font-size: 12px; color: #9ca3af; background: #f3f4f6; padding: 1px 10px; border-radius: 12px; }
         .modal-body .context-entry .context-text { margin-top: 6px; font-size: 14px; color: #1f2937; line-height: 1.7; padding: 6px 10px; background: #fff; border-radius: 4px; }
         .modal-body .context-entry .context-text .highlight { background: #fcd34d; font-weight: 600; padding: 0 3px; border-radius: 3px; }
@@ -466,22 +493,29 @@ if (isset($_GET['ajax'])) {
 <body>
 <div class="container">
     <div class="header">
-        <h1>📊 实时扫描监控面板</h1>
+        <h1>📊 扫描监控面板（最近7天）</h1>
         <div class="header-actions">
             <span class="update-time">🕒 <span id="updateTime"><?= $now ?></span></span>
             <button class="btn-refresh" onclick="location.reload();">⟳ 刷新</button>
         </div>
     </div>
 
-    <!-- 统计卡片：实时显示今日扫描和今日违规 -->
+    <!-- 扫描模式信息 -->
+    <div class="scan-mode-info">
+        <span><strong>🔁 扫描模式：</strong><?= htmlspecialchars($scanModeInfo['mode']) ?></span>
+        <span><strong>📅 最近全量扫描时间：</strong><?= htmlspecialchars($scanModeInfo['time']) ?></span>
+        <span><strong>📆 数据周期：</strong>最近7天（增量累积）</span>
+    </div>
+
+    <!-- 统计卡片 -->
     <div class="stats-grid" id="stats">
         <div class="stat-card">
-            <div class="label">📄 今日扫描</div>
-            <div class="value" id="todayScanned"><?= $todayPages ?></div>
+            <div class="label">📄 最近7天扫描</div>
+            <div class="value" id="scannedCount"><?= $scannedPages ?></div>
         </div>
         <div class="stat-card">
-            <div class="label">⚠️ 今日违规</div>
-            <div class="value" id="todayViolations"><?= $todayViolations ?></div>
+            <div class="label">⚠️ 可能违规</div>
+            <div class="value" id="violationCount"><?= $violationsCount ?></div>
         </div>
         <div class="stat-card">
             <div class="label">🔄 运行状态</div>
@@ -514,10 +548,10 @@ if (isset($_GET['ajax'])) {
                 <tr>
                     <th>站点名</th>
                     <th>域名</th>
-                    <th>违禁词类型</th>
-                    <th>问题出现次数</th>
+                    <th>可能违规词类型</th>
+                    <th>可能违规次数</th>
                     <th>已扫描页数</th>
-                    <th>问题页面数</th>
+                    <th>可能违规页面数</th>
                     <th>状态</th>
                 </tr>
             </thead>
@@ -527,19 +561,19 @@ if (isset($_GET['ajax'])) {
         </table>
     </div>
 
-    <!-- 违禁词聚合区域 -->
+    <!-- 可能违规词聚合区域 -->
     <div class="violation-section">
         <h2>
-            📌 违禁词聚合
+            📌 可能违规词聚合
             <span class="count-badge" id="wordCount">加载中...</span>
             <a href="#" id="exportLink" class="btn-export">📥 导出上下文JSON（去重）</a>
         </h2>
         <div class="search-box">
-            <input type="text" id="searchInput" placeholder="搜索违禁词..." oninput="filterWords()">
+            <input type="text" id="searchInput" placeholder="搜索可能违规词..." oninput="filterWords()">
             <button onclick="loadWords()">🔄 刷新</button>
         </div>
         <div class="word-list" id="wordList">
-            <div class="no-data">请选择站点查看违禁词</div>
+            <div class="no-data">请选择站点查看可能违规词</div>
         </div>
     </div>
 
@@ -547,14 +581,14 @@ if (isset($_GET['ajax'])) {
     <div class="modal-overlay" id="modalOverlay">
         <div class="modal">
             <div class="modal-header">
-                <div class="modal-title" id="modalTitle">违禁词详情</div>
+                <div class="modal-title" id="modalTitle">可能违规词详情</div>
                 <button class="modal-close" onclick="closeModal()">✕</button>
             </div>
             <div class="modal-body" id="modalBody"></div>
         </div>
     </div>
 
-    <div class="footer">扫描脚本 1.py · 并发20 · 超时45s · 实时统计 · 点击站点查看违禁词 · 点击违禁词查看详情</div>
+    <div class="footer">扫描脚本 1.py · 并发10 · 超时30s · 实时统计 · 点击站点查看可能违规词 · 点击词条查看详情</div>
 </div>
 
 <script>
@@ -628,7 +662,7 @@ if (isset($_GET['ajax'])) {
     function loadWords(site) {
         const targetSite = site || currentSite;
         if (!targetSite) {
-            document.getElementById('wordList').innerHTML = '<div class="no-data">请选择站点查看违禁词</div>';
+            document.getElementById('wordList').innerHTML = '<div class="no-data">请选择站点查看可能违规词</div>';
             document.getElementById('wordCount').textContent = '0';
             return;
         }
@@ -652,7 +686,7 @@ if (isset($_GET['ajax'])) {
     function renderWords(words) {
         const container = document.getElementById('wordList');
         if (!words.length) {
-            container.innerHTML = '<div class="no-data">✅ 暂无违禁词记录</div>';
+            container.innerHTML = '<div class="no-data">✅ 暂无可能违规词记录</div>';
             return;
         }
         let html = '';
@@ -683,7 +717,7 @@ if (isset($_GET['ajax'])) {
             .then(data => {
                 if (data.code === 0) {
                     const details = data.data.details;
-                    document.getElementById('modalTitle').textContent = '🔍 违禁词：' + word + '（共 ' + details.length + ' 处）';
+                    document.getElementById('modalTitle').textContent = '🔍 可能违规词：' + word + '（共 ' + details.length + ' 处）';
                     let bodyHtml = '';
                     const urlMap = {};
                     details.forEach(d => {
@@ -733,8 +767,8 @@ if (isset($_GET['ajax'])) {
         fetch('?ajax=1')
             .then(res => res.json())
             .then(data => {
-                document.getElementById('todayScanned').textContent = data.todayPages;
-                document.getElementById('todayViolations').textContent = data.todayViolations;
+                document.getElementById('scannedCount').textContent = data.scannedPages;
+                document.getElementById('violationCount').textContent = data.violationsCount;
                 document.getElementById('updateTime').textContent = data.time;
                 document.getElementById('currentUrl').textContent = data.currentUrl;
                 const statusEl = document.getElementById('runStatus');
