@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-广告违禁词扫描器 v3.2 - 稳定版（并发20，超时45s，重试2次）
+广告违禁词扫描器 v3.2 - 轻量版（并发10，超时30s，重试1次，每页日志）
 用法:
   python3 1.py           # 增量扫描（跳过已扫描URL）
   python3 1.py --reset   # 清空历史，重新扫描全部
@@ -108,7 +108,6 @@ EXACT_FORBIDDEN_WORDS = [
 # 二、白名单上下文（这些语境下的违禁词不判违规）
 # ============================================================
 SAFE_CONTEXT_PATTERNS = [
-    # ===== 地理/自然描述（客观事实，非广告宣传） =====
     re.compile(r'中国最[大高长]的', re.IGNORECASE),
     re.compile(r'亚洲最[大高长]的', re.IGNORECASE),
     re.compile(r'世界最[大高长]的', re.IGNORECASE),
@@ -125,8 +124,6 @@ SAFE_CONTEXT_PATTERNS = [
     re.compile(r'高达\d+%', re.IGNORECASE),
     re.compile(r'占比最[高]', re.IGNORECASE),
     re.compile(r'最[大高长]的[湖泊河流山脉沙漠]', re.IGNORECASE),
-
-    # ===== 客观描述/免责声明（非广告宣传） =====
     re.compile(r'豪华考斯特', re.IGNORECASE),
     re.compile(r'价格仅供参考', re.IGNORECASE),
     re.compile(r'行程仅供参考', re.IGNORECASE),
@@ -134,8 +131,6 @@ SAFE_CONTEXT_PATTERNS = [
     re.compile(r'具体以实际为准', re.IGNORECASE),
     re.compile(r'老字号', re.IGNORECASE),
     re.compile(r'中华老字号', re.IGNORECASE),
-
-    # ===== 健康提示（非功效宣称） =====
     re.compile(r'如有高血压', re.IGNORECASE),
     re.compile(r'患有高血压', re.IGNORECASE),
     re.compile(r'高血压患者', re.IGNORECASE),
@@ -143,31 +138,19 @@ SAFE_CONTEXT_PATTERNS = [
     re.compile(r'高血压[、，]心脏病', re.IGNORECASE),
     re.compile(r'糖尿病[患者者]', re.IGNORECASE),
     re.compile(r'患有糖尿病', re.IGNORECASE),
-
-    # ===== 正常服务描述（非承诺/非夸大） =====
     re.compile(r'导游服务费', re.IGNORECASE),
     re.compile(r'免排队', re.IGNORECASE),
     re.compile(r'VIP通道', re.IGNORECASE),
-
-    # ===== ✅ 旅游行业合法描述（已屏蔽，不判违规） =====
     re.compile(r'纯玩无购物', re.IGNORECASE),
     re.compile(r'全程无购物', re.IGNORECASE),
     re.compile(r'纯玩团', re.IGNORECASE),
     re.compile(r'绝无购物', re.IGNORECASE),
     re.compile(r'一价全包', re.IGNORECASE),
     re.compile(r'优先入园', re.IGNORECASE),
-
-    # ===== ✅ 路线/游览客观描述 =====
     re.compile(r'途经', re.IGNORECASE),
     re.compile(r'车览', re.IGNORECASE),
-
-    # ===== ✅ “生发”在旅游网站中绝大多数为“发生/发现/生发展” =====
     re.compile(r'生发', re.IGNORECASE),
-
-    # ===== ✅ “恐怖”在旅游网站中多为“恐怖袭击/恐怖事件”等客观新闻 =====
     re.compile(r'恐怖', re.IGNORECASE),
-
-    # ===== ✅ “世界级”+客观名词为事实描述 =====
     re.compile(r'世界级[的]?文化遗产', re.IGNORECASE),
     re.compile(r'世界级[的]?自然遗产', re.IGNORECASE),
     re.compile(r'世界级[的]?非遗', re.IGNORECASE),
@@ -188,11 +171,9 @@ _SORTED_EXACT = sorted(EXACT_FORBIDDEN_WORDS, key=len, reverse=True)
 EXACT_REGEX = re.compile('|'.join(re.escape(w) for w in _SORTED_EXACT), re.IGNORECASE)
 
 # ============================================================
-# 四、谐音替换（可选功能，默认关闭）
+# 四、谐音替换（默认关闭）
 # ============================================================
 def replace_homophones(text):
-    """谐音替换功能（默认关闭，直接返回原文）"""
-    # 当前禁用谐音替换，避免误报
     return text
 
 # ============================================================
@@ -274,19 +255,18 @@ def save_violation(site_name, url, items):
             f.write("-" * 80 + "\n")
 
 # ============================================================
-# 七、核心扫描引擎
+# 七、核心扫描引擎（并发10，超时30秒，重试1次）
 # ============================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 调整后的 Session 配置（并发20，超时45秒，重试2次） ---
 session = requests.Session()
-retry = Retry(total=2, read=2, connect=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
+retry = Retry(total=1, read=1, connect=1, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=retry)
 session.mount('http://', adapter)
 session.mount('https://', adapter)
 session.headers.update({'User-Agent': 'Mozilla/5.0'})
-session.timeout = 45   # 延长超时
+session.timeout = 30
 
 def extract_visible_text(html_content):
     try:
@@ -330,7 +310,7 @@ def crawl_page(site_name, url):
         url = clean_url
 
     try:
-        resp = session.get(url, timeout=45)
+        resp = session.get(url, timeout=30)
         resp.encoding = resp.apparent_encoding or 'utf-8'
         raw_html = resp.text
     except Exception as e:
@@ -361,12 +341,22 @@ def crawl_page(site_name, url):
     except:
         pass
 
+    # 保存违规记录（如果有）
     if found_items:
         save_violation(site_name, url, found_items)
-        preview = ' | '.join([item['word'] for item in found_items[:3]])
-        logger.info(f"  ⚠️ [{site_name}] {url} -> {preview}")
 
+    # 保存已扫描URL
     save_scanned_url(url)
+
+    # ----- 每个页面都记录日志 -----
+    if found_items:
+        # 取前3个违禁词显示
+        preview = ' | '.join([item['word'] for item in found_items[:3]])
+        logger.info(f"  ❗ [{site_name}] {url} (违规: {preview})")
+    else:
+        logger.info(f"  ✅ [{site_name}] {url} (正常)")
+    # ------------------------------
+
     return url, found_items, new_links
 
 def crawl_and_scan(site_config):
@@ -387,8 +377,7 @@ def crawl_and_scan(site_config):
     violations = {}
     lock = threading.Lock()
 
-    # --- 并发数修改为 20 ---
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_url = {executor.submit(crawl_page, site_name, u): u for u in to_visit}
         to_visit.clear()
 
@@ -405,7 +394,7 @@ def crawl_and_scan(site_config):
                                 to_visit.append(link)
                 with lock:
                     new_tasks = []
-                    while to_visit and len(new_tasks) < 20:   # 分批提交，每次最多20
+                    while to_visit and len(new_tasks) < 10:
                         u = to_visit.pop(0)
                         if u not in visited and u not in scanned_urls:
                             visited.add(u)
@@ -420,7 +409,7 @@ def crawl_and_scan(site_config):
     return {'name': site_name, 'total_pages': total_pages, 'violations': violations}
 
 # ============================================================
-# 八、生成HTML报告
+# 八、生成HTML报告（可选，保留）
 # ============================================================
 def generate_html_report(all_results, output_path='index.html'):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -458,7 +447,7 @@ def generate_html_report(all_results, output_path='index.html'):
 </head>
 <body>
 <div class="container"><h1>⚡ 广告违禁词扫描报告</h1>
-<p style="color:#555;">生成时间：{now} | 并发20 | 超时45s | 断点续扫 | 已去除锚点 | 过滤静态资源 | 跳过ListInfo.php</p>
+<p style="color:#555;">生成时间：{now} | 并发10 | 超时30s | 断点续扫 | 已去除锚点 | 过滤静态资源 | 跳过ListInfo.php</p>
 <div class="summary">
   <div class="summary-item">📌 站点：<span>{total_sites}</span></div>
   <div class="summary-item">📄 总页数：<span>{total_pages}</span></div>
@@ -486,24 +475,20 @@ def generate_html_report(all_results, output_path='index.html'):
 # 九、主程序入口
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='广告违禁词扫描器 v3.2')
+    parser = argparse.ArgumentParser(description='广告违禁词扫描器 v3.2 (轻量版)')
     parser.add_argument('--reset', '-r', action='store_true', help='清空历史记录，重新扫描全部URL')
     args = parser.parse_args()
 
     total_start = time.time()
     print("=" * 60)
-    print("🔥 广告违禁词扫描器 v3.2 (稳定版 - 超时45s, 重试2次)")
+    print("🔥 广告违禁词扫描器 v3.2 (轻量版 - 超时30s, 重试1次, 并发10)")
     print(f"精确词: {len(EXACT_FORBIDDEN_WORDS)} | 白名单: {len(SAFE_CONTEXT_PATTERNS)}")
-    print(f"待扫描站点: {len(WEBSITES)} 个 | 并发: 20")
+    print(f"待扫描站点: {len(WEBSITES)} 个 | 并发: 10")
     if args.reset:
         print("🔄 已指定 --reset，将清空历史记录并重新扫描全部。")
     print("=" * 60)
 
-    load_start = time.time()
     load_scanned_urls()
-    load_elapsed = time.time() - load_start
-    print(f"⏱️ 加载已扫描URL耗时: {load_elapsed:.2f} 秒")
-
     if args.reset:
         clear_scanned_records()
     elif scanned_urls:
